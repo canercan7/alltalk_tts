@@ -1165,6 +1165,108 @@ class tts_class:
                 
             self.tts_generating_lock = False
 
+    async def generate_tts_bytes(self, text, voice, language, temperature, repetition_penalty, speed, pitch, output_file, streaming):
+  
+        self.debug_func_entry()
+        
+        # Initial validation
+        if not self.is_tts_model_loaded:
+            self.print_message("No TTS model loaded", message_type="error")
+            raise HTTPException(status_code=400, detail="You currently have no TTS model loaded.")
+        
+        # Lock generation and track start time
+        self.tts_generating_lock = True
+        self.print_message("Starting TTS generation process", message_type="debug_tts")
+        self.print_message(f"Generation parameters: temperature={temperature}, speed={speed}, streaming={streaming}", 
+                        message_type="debug_tts_variables")
+        
+        # Handle low VRAM mode if needed
+        if self.lowvram_enabled and self.device == "cpu":
+            self.print_message("Low VRAM mode: Moving model to GPU", message_type="debug_tts")
+            await self.handle_lowvram_change()
+        
+        generate_start_time = time.time()
+        self.print_message(f"Processing voice input: {voice}", message_type="debug_tts")
+        gpt_cond_latent = None
+        speaker_embedding = None
+            
+            # Handle different voice types
+        if voice.startswith('latent:'):
+                if self.current_model_loaded.startswith("xtts"):
+                    gpt_cond_latent, speaker_embedding = self._load_latents(voice)
+                
+        elif voice.startswith('voiceset:'):
+                voice_set = voice.replace("voiceset:", "")
+                voice_set_path = os.path.join(self.main_dir, "voices", "xtts_multi_voice_sets", voice_set)
+                self.print_message(f"Processing voice set from: {voice_set_path}", message_type="debug_tts")
+                
+                wavs_files = glob.glob(os.path.join(voice_set_path, "*.wav"))
+                if not wavs_files:
+                    self.print_message(f"No WAV files found in voice set: {voice_set}", message_type="error")
+                    raise HTTPException(status_code=400, detail=f"No WAV files found in voice set: {voice_set}")
+                
+                if len(wavs_files) > 5:
+                    wavs_files = random.sample(wavs_files, 5)
+                    self.print_message(f"Using 5 random samples from voice set", message_type="debug_tts")
+                
+                if self.current_model_loaded.startswith("xtts"):
+                    self.print_message("Generating conditioning latents from voice set", message_type="debug_tts")
+                    gpt_cond_latent, speaker_embedding = self._generate_conditioning_latents(wavs_files)
+                
+        else:
+                normalized_path = os.path.normpath(os.path.join(self.main_dir, "voices", voice))
+                wavs_files = [normalized_path]
+                self.print_message(f"Using single voice sample: {normalized_path}", message_type="debug_tts")
+                
+                if self.current_model_loaded.startswith("xtts"):
+                    self.print_message("Generating conditioning latents from single sample", message_type="debug_tts")
+                    gpt_cond_latent, speaker_embedding = self._generate_conditioning_latents(wavs_files)
+
+        self.print_message(f"Generating speech for text: {text}", message_type="debug_tts")
+                
+        common_args = {
+                    "text": text,
+                    "language": language,
+                    "gpt_cond_latent": gpt_cond_latent,
+                    "speaker_embedding": speaker_embedding,
+                    "temperature": float(temperature),
+                    "length_penalty": float(self.model.config.length_penalty),
+                    "repetition_penalty": float(repetition_penalty),
+                    "top_k": int(self.model.config.top_k),
+                    "top_p": float(self.model.config.top_p),
+                    "speed": float(speed),
+                    "enable_text_splitting": True
+                }
+                
+        self.print_message("Generation settings:", message_type="debug_tts_variables")
+        self.print_message(f"├─ Temperature: {temperature}", message_type="debug_tts_variables")
+        self.print_message(f"├─ Speed: {speed}", message_type="debug_tts_variables")
+        self.print_message(f"├─ Language: {language}", message_type="debug_tts_variables")
+        self.print_message(f"└─ Text length: {len(text)} characters", message_type="debug_tts_variables")
+        self.print_message("Starting non-streaming generation", message_type="debug_tts")
+        output = self.model.inference(**common_args)
+        #torchaudio.save(str(output_file), torch.tensor(output["wav"]).unsqueeze(0), 24000)
+        #self.print_message(f"Saved audio to: {output_file}", message_type="debug_tts")
+        generate_end_time = time.time()
+        generate_elapsed_time = generate_end_time - generate_start_time
+            
+            # Standard output message (not debug)
+        self.print_message(
+                f"\033[94mTTS Generate: \033[93m{generate_elapsed_time:.2f} seconds. \033[94mLowVRAM: \033[33m{self.lowvram_enabled} \033[94mDeepSpeed: \033[33m{self.deepspeed_enabled}\033[0m",
+                message_type="standard"
+            )
+            
+            # Handle low VRAM cleanup
+        if self.lowvram_enabled and self.device == "cuda" and not self.tts_narrator_generatingtts:
+            self.print_message("Low VRAM mode: Moving model back to CPU", message_type="debug_tts")
+        
+        await self.handle_lowvram_change()
+                
+        self.tts_generating_lock = False
+        return output
+            
+            
+
     ##############################################################################
     # Helper Functions that are specific to this script & not generically needed #
     ##############################################################################

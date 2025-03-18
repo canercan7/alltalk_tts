@@ -1356,7 +1356,7 @@ atexit.register(lambda: _state["process"].terminate() if _state["process"].poll(
 ##########################
 # Setup global variables #
 ##########################
-# deepspeed_installed = True
+deepspeed_installed = True
 tgwui_lovram = False
 tgwui_deepspeed = False
 # Create a global lock for tracking TTS generation occuring
